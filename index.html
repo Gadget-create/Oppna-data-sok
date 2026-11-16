@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sök öppna samhällsbyggnadsdata</title>
+  <style>
+    :root {
+      --bg: #f3f1eb;
+      --card: #fff;
+      --ink: #1c2429;
+      --muted: #5a666e;
+      --line: #d5d2c8;
+      --accent: #1b4f72;
+      --accent-soft: #e6eef4;
+      --ok: #215c3a;
+      --ok-bg: #e7f4eb;
+      --warn: #6a4b00;
+      --warn-bg: #f8f0d8;
+      --miss: #6b2a2a;
+      --miss-bg: #f8eaea;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.45;
+    }
+    header, main { max-width: 980px; margin: 0 auto; padding: 0 1.1rem; }
+    header { padding-top: 1.6rem; padding-bottom: .4rem; }
+    h1 { font-size: 1.6rem; margin: 0 0 .4rem; font-weight: 700; }
+    .lead { margin: 0 0 1rem; color: var(--muted); max-width: 46rem; }
+    .note {
+      background: var(--accent-soft);
+      border-left: 4px solid var(--accent);
+      padding: .6rem .8rem;
+      margin: 0 0 1.2rem;
+      font-size: .95rem;
+    }
+    form.sok { display: flex; gap: .5rem; margin-bottom: .8rem; }
+    form.sok input[type="search"] {
+      flex: 1;
+      padding: .65rem .75rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+    }
+    button, .btn {
+      font: inherit;
+      border: 0;
+      border-radius: 8px;
+      padding: .6rem .9rem;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+    button.secondary, .btn.secondary {
+      background: #fff;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+    button:disabled { opacity: .6; cursor: not-allowed; }
+    .temar { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: 1rem; }
+    .tema {
+      background: #fff;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: .3rem .7rem;
+      font-size: .92rem;
+    }
+    .tema[aria-pressed="true"] {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .filter {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: .8rem 1.2rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: .9rem 1rem;
+      margin-bottom: 1rem;
+    }
+    @media (max-width: 700px) { .filter { grid-template-columns: 1fr; } }
+    .filter h2 { font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; margin: 0 0 .35rem; color: var(--muted); }
+    .val { display: flex; flex-wrap: wrap; gap: .15rem 0.85rem; }
+    .val label { display: flex; align-items: center; gap: .3rem; font-size: .95rem; }
+    .omrade { grid-column: 1 / -1; }
+    .omrade-rad { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+    .omrade-rad input { flex: 1; min-width: 16rem; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+    #status { color: var(--muted); margin: 0 0 .8rem; }
+    .sammanfattning { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 .8rem; }
+    .pill { background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: .15rem .55rem; font-size: .85rem; }
+    .kort {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: .9rem 1rem 1rem;
+      margin-bottom: .7rem;
+    }
+    .kort h3 { margin: .15rem 0 .35rem; font-size: 1.05rem; }
+    .meta-rad { color: var(--muted); font-size: .9rem; margin-bottom: .4rem; }
+    dl { margin: 0; display: grid; grid-template-columns: 11rem 1fr; gap: .2rem .8rem; }
+    @media (max-width: 600px) { dl { grid-template-columns: 1fr; } }
+    dt { color: var(--muted); font-weight: 600; font-size: .88rem; }
+    dd { margin: 0; }
+    .lankar { margin: .7rem 0 0; display: flex; flex-wrap: wrap; gap: .5rem .9rem; }
+    .lankar a { color: var(--accent); }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: .05rem .5rem;
+      font-size: .8rem;
+      background: var(--accent-soft);
+      color: var(--accent);
+      margin-right: .25rem;
+    }
+    .badge.ok { background: var(--ok-bg); color: var(--ok); }
+    .badge.warn { background: var(--warn-bg); color: var(--warn); }
+    .badge.miss { background: var(--miss-bg); color: var(--miss); }
+    .fel { color: var(--miss); }
+    footer { max-width: 980px; margin: 1.5rem auto 2.5rem; padding: 0 1.1rem; color: var(--muted); font-size: .9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sök öppna samhällsbyggnadsdata</h1>
+    <p class="lead">En enkel prototyp för att se vilken öppen data som finns inom ett tema, på vilken geografisk nivå, och vad datat avser. Sidan hämtar bara metadata, inte själva statistikvärdena.</p>
+    <p class="note">Sök på fritext och välj gärna ett tema. Båda används tillsammans. Filtrera på geografisk nivå, och välj ett område (till exempel Gävle kommun) för att se om datat finns där.</p>
+  </header>
+  <main>
+    <form class="sok" id="sokform">
+      <input type="search" id="q" name="q" placeholder="Sök på fritext, till exempel bostäder, befolkning eller gymnasieskola" autocomplete="off">
+      <button type="submit">Sök</button>
+    </form>
+    <div class="temar" id="temar" role="group" aria-label="Tema"></div>
+    <section class="filter" aria-label="Filter">
+      <div>
+        <h2>Källa</h2>
+        <div class="val" id="kallor"></div>
+      </div>
+      <div>
+        <h2>Geografisk nivå</h2>
+        <div class="val" id="nivaer"></div>
+      </div>
+      <div class="omrade">
+        <h2>Område</h2>
+        <div class="omrade-rad">
+          <input list="omradelista" id="omrade" placeholder="Välj kommun, län eller riket, till exempel Gävle">
+          <datalist id="omradelista"></datalist>
+          <label><input type="checkbox" id="baraOmrade"> Visa bara träffar som finns för valt område</label>
+        </div>
+        <p class="lead" style="margin:.4rem 0 0;font-size:.9rem;">För SCB kontrolleras områdets kod i tabellens regionvariabel (metadata). För Kolada visas bara om nyckeltalet är definierat på den typen av nivå, inte om ett värde finns för just det området.</p>
+      </div>
+    </section>
+    <p id="status">Sök eller välj ett tema för att börja. Inga anrop görs förrän dess.</p>
+    <div class="sammanfattning" id="sammanfattning" hidden></div>
+    <p><button type="button" class="secondary" id="forfina" hidden>Förfina geografiska nivåer för SCB-träffarna</button></p>
+    <div id="traffar"></div>
+  </main>
+  <footer>
+    Källor: SCB Statistikdatabasen (API v2), Kolada (API v3) och Sveriges dataportal. Prototyp för brainstorming, inte en komplett katalog.
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>
