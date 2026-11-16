@@ -242,8 +242,126 @@ def report_query(query: str) -> None:
     return items, items_k
 
 
+def _unique(ids: list) -> list:
+    seen = set()
+    out = []
+    for i in ids:
+        if i in seen:
+            continue
+        seen.add(i)
+        out.append(i)
+    return out
+
+
+def page_scb_all(query: str, page_size: int = 40):
+    page = 1
+    total = None
+    ids: list = []
+    while page <= 30:
+        url = SCB + "?" + urllib.parse.urlencode(
+            {"lang": "sv", "pageNumber": page, "pageSize": page_size, "query": query}
+        )
+        status, _headers, data = get_json(url)
+        if status != 200:
+            raise RuntimeError(f"SCB sida {page} HTTP {status}")
+        tables = data.get("tables") or []
+        info = data.get("page") or {}
+        if info.get("totalElements") is not None:
+            total = info["totalElements"]
+        ids.extend(t.get("id") for t in tables)
+        total_pages = info.get("totalPages") or page
+        if not tables or page >= total_pages:
+            break
+        page += 1
+    return total, ids, page
+
+
+def page_kolada_all(query: str, per_page: int = 80):
+    page = 1
+    ids: list = []
+    while page <= 30:
+        url = KOLADA + "?" + urllib.parse.urlencode({"page": page, "per_page": per_page, "title": query})
+        status, _headers, data = get_json(url)
+        if status != 200:
+            raise RuntimeError(f"Kolada sida {page} HTTP {status}")
+        values = data.get("values") or []
+        ids.extend(k.get("id") for k in values)
+        if not data.get("next_url") or not values:
+            break
+        page += 1
+    return ids, page
+
+
+def page_dataportal_all(query: str, limit: int = 20):
+    offset = 0
+    total = None
+    ids: list = []
+    pages = 0
+    while pages <= 30:
+        solr = f"title.sv:{query} AND rdfType:http\\://www.w3.org/ns/dcat#Dataset AND public:true"
+        url = DP + "?" + urllib.parse.urlencode(
+            {"type": "solr", "limit": limit, "offset": offset, "sort": "modified desc", "query": solr}
+        )
+        status, _headers, data = get_json(url)
+        if status != 200:
+            raise RuntimeError(f"Dataportal offset {offset} HTTP {status}")
+        children = (data.get("resource") or {}).get("children") or []
+        if data.get("results"):
+            total = data["results"]
+        ids.extend((c.get("contextId"), c.get("entryId")) for c in children)
+        pages += 1
+        if not children or (total is not None and offset + len(children) >= total):
+            break
+        offset += len(children)
+    return total, ids, pages
+
+
+def verify_paging(query: str = "bostäder") -> None:
+    print("\n" + "=" * 72)
+    print(f"PAGINERING: alla träffar för {query}")
+    print("=" * 72)
+    problems = []
+
+    total, scb_ids, scb_pages = page_scb_all(query, 40)
+    scb_unique = _unique(scb_ids)
+    print(f"SCB  sidor={scb_pages}  hämtade={len(scb_ids)}  unika={len(scb_unique)}  totalElements={total}")
+    if scb_pages < 2:
+        problems.append("SCB borde kräva mer än en sida")
+    if total is None or len(scb_unique) != total or len(scb_ids) != len(scb_unique):
+        problems.append(f"SCB-sidor täcker inte totalElements ({len(scb_unique)} unika av {total})")
+
+    kolada_ids, kolada_pages = page_kolada_all(query, 80)
+    kolada_small, small_pages = page_kolada_all(query, 10)
+    print(f"Kolada per_page=80  sidor={kolada_pages}  unika={len(_unique(kolada_ids))}")
+    print(f"Kolada per_page=10  sidor={small_pages}  unika={len(_unique(kolada_small))}")
+    if set(kolada_ids) != set(kolada_small):
+        problems.append("Kolada page/per_page ger inte samma träffar för olika sidstorlek")
+    if len(kolada_ids) != len(set(kolada_ids)) or len(kolada_small) != len(set(kolada_small)):
+        problems.append("Kolada returnerade dubbletter mellan sidor")
+    if small_pages < 2:
+        problems.append("Kolada per_page=10 borde ge flera sidor")
+
+    dp_total, dp_ids, dp_pages = page_dataportal_all(query, 20)
+    dp_unique = _unique(dp_ids)
+    print(f"Dataportal  sidor={dp_pages}  hämtade={len(dp_ids)}  unika={len(dp_unique)}  results={dp_total}")
+    if dp_pages < 2:
+        problems.append("Dataportal borde kräva mer än en sida")
+    if dp_total is None or len(dp_unique) != dp_total or len(dp_ids) != len(dp_unique):
+        problems.append(f"Dataportal-sidor täcker inte results ({len(dp_unique)} unika av {dp_total})")
+
+    if problems:
+        raise RuntimeError("; ".join(problems))
+    print("Alla träffar nåddes utan dubbletter mellan sidor.")
+
+
 def main() -> int:
     errors = []
+    try:
+        verify_paging("bostäder")
+    except Exception as e:
+        errors.append(("paginering bostäder", e))
+        print(f"FEL vid paginering: {type(e).__name__}: {e}", file=sys.stderr)
+
     for q in ("bostäder", "befolkning"):
         try:
             report_query(q)

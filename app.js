@@ -100,7 +100,9 @@
     openFolder: null,
     saved: { version: 1, folders: [] },
     pendingItem: null,
-    nameAction: null
+    nameAction: null,
+    search: null,
+    loadingMore: false
   };
 
   const $ = (id) => document.getElementById(id);
@@ -276,13 +278,17 @@
     return res.json();
   }
 
-  async function searchScb(query) {
-    const url = SCB_TABLES + "?lang=sv&pageNumber=1&pageSize=40&query=" + encodeURIComponent(query);
+  async function searchScb(query, pageNumber) {
+    const pageNo = pageNumber || 1;
+    const url = SCB_TABLES + "?lang=sv&pageNumber=" + pageNo + "&pageSize=40&query=" + encodeURIComponent(query);
     const data = await fetchJson(url);
     const tables = data.tables || [];
-    const total = (data.page && data.page.totalElements) || tables.length;
+    const page = data.page || {};
+    const total = page.totalElements != null ? page.totalElements : tables.length;
+    const totalPages = page.totalPages != null ? page.totalPages : (tables.length < 40 ? pageNo : pageNo + 1);
     return {
-      total,
+      total: total,
+      done: !tables.length || pageNo >= totalPages,
       items: tables.map((t) => {
         const inferred = inferLevelsFromTitle(t.label, t.variableNames);
         const path = (t.paths && t.paths[0]) || [];
@@ -333,13 +339,15 @@
     return levels;
   }
 
-  async function searchKolada(query) {
-    const url = KOLADA_KPI + "?page=1&per_page=80&title=" + encodeURIComponent(query);
+  async function searchKolada(query, page) {
+    const pageNo = page || 1;
+    const url = KOLADA_KPI + "?page=" + pageNo + "&per_page=80&title=" + encodeURIComponent(query);
     const data = await fetchJson(url);
     const values = data.values || [];
-    const total = data.next_url ? values.length + "+" : (data.count != null && data.count > values.length ? data.count : values.length);
+    const more = !!data.next_url && values.length > 0;
     return {
-      total,
+      total: null,
+      done: !more,
       items: values.map((k) => ({
         id: "kolada-" + k.id,
         source: "kolada",
@@ -396,9 +404,10 @@
     return out.map((x) => x.val);
   }
 
-  async function searchDataportal(query) {
+  async function searchDataportal(query, offset) {
+    const start = offset || 0;
     const solr = "title.sv:" + query + " AND rdfType:http\\://www.w3.org/ns/dcat#Dataset AND public:true";
-    const url = DP_SEARCH + "?type=solr&limit=20&offset=0&sort=" + encodeURIComponent("modified desc") + "&query=" + encodeURIComponent(solr);
+    const url = DP_SEARCH + "?type=solr&limit=20&offset=" + start + "&sort=" + encodeURIComponent("modified desc") + "&query=" + encodeURIComponent(solr);
     const data = await fetchJson(url);
     const children = (data.resource && data.resource.children) || [];
     const items = children.map((child) => {
@@ -448,7 +457,13 @@
         catalogUrl: page
       };
     });
-    return { total: data.results != null ? data.results : items.length, items: items };
+    const reported = typeof data.results === "number" ? data.results : null;
+    const total = reported > 0 ? reported : (start === 0 ? items.length : null);
+    return {
+      total: total,
+      done: !items.length || (total != null && start + items.length >= total),
+      items: items
+    };
   }
 
   async function loadAreas() {
@@ -551,25 +566,62 @@
     });
   }
 
+  function sourcePill(id, label) {
+    const n = state.items.filter((i) => i.source === id).length;
+    const src = state.search && state.search.sources[id];
+    if (src && src.total != null) return '<span class="pill">' + label + ": " + n + " av " + src.total + "</span>";
+    if (src && !src.done) return '<span class="pill">' + label + ": " + n + "+</span>";
+    return '<span class="pill">' + label + ": " + n + "</span>";
+  }
+
+  function knownTotal() {
+    if (!state.search) return { n: state.items.length, open: false };
+    let n = 0;
+    let open = false;
+    Object.keys(state.search.sources).forEach((id) => {
+      const src = state.search.sources[id];
+      if (src.total == null) {
+        n += src.fetched || 0;
+        if (!src.done) open = true;
+      } else n += src.total;
+    });
+    return { n: n, open: open };
+  }
+
+  function hasMore() {
+    if (!state.search) return false;
+    if (state.loadingMore) return true;
+    return Object.keys(state.search.sources).some((id) => !state.search.sources[id].done);
+  }
+
+  function moreButtonHtml() {
+    if (!hasMore()) return "";
+    const label = state.loadingMore ? "Hämtar fler…" : "Visa fler";
+    return '<p class="mer"><button type="button" class="secondary" id="visaFler"' +
+      (state.loadingMore ? " disabled" : "") + ' aria-busy="' + (state.loadingMore ? "true" : "false") + '">' +
+      label + "</button></p>";
+  }
+
   function render() {
     const items = visibleItems();
     const sum = $("sammanfattning");
-    const by = { scb: 0, kolada: 0, dataportal: 0 };
-    state.items.forEach((i) => { if (by[i.source] != null) by[i.source] += 1; });
+    const tot = knownTotal();
+    const y = tot.n + (tot.open ? "+" : "");
     sum.hidden = !state.items.length;
     sum.innerHTML = [
-      '<span class="pill">SCB: ' + by.scb + '</span>',
-      '<span class="pill">Kolada: ' + by.kolada + '</span>',
-      '<span class="pill">Dataportal: ' + by.dataportal + '</span>',
-      '<span class="pill">Visar ' + items.length + ' av ' + state.items.length + '</span>'
+      sourcePill("scb", "SCB"),
+      sourcePill("kolada", "Kolada"),
+      sourcePill("dataportal", "Dataportal"),
+      '<span class="pill">Visar ' + items.length + " av " + y + "</span>"
     ].join("");
     $("forfina").hidden = !state.items.some((i) => i.source === "scb" && !i.regionCodes);
     const root = $("traffar");
+    const more = moreButtonHtml();
     if (!items.length) {
-      root.innerHTML = state.items.length ? "<p>Inga träffar med nuvarande filter.</p>" : "";
+      root.innerHTML = (state.items.length ? "<p>Inga träffar med nuvarande filter.</p>" : "") + more;
       return;
     }
-    root.innerHTML = items.map(renderCard).join("");
+    root.innerHTML = items.map(renderCard).join("") + more;
     root.querySelectorAll("[data-enrich]").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const id = btn.getAttribute("data-enrich");
@@ -960,6 +1012,90 @@
     $("sparStatus").textContent = "Exporten laddas ner som oppna-data-sparade.json.";
   }
 
+  function includedSources() {
+    return ["scb", "kolada", "dataportal"].filter(sourceEnabled);
+  }
+
+  function blankCursors(names) {
+    const sources = {};
+    names.forEach((name) => {
+      sources[name] = { page: 1, offset: 0, fetched: 0, total: null, done: false };
+    });
+    return sources;
+  }
+
+  function fetchSource(name, query, src) {
+    if (name === "scb") return searchScb(query, src.page);
+    if (name === "kolada") return searchKolada(query, src.page);
+    return searchDataportal(query, src.offset);
+  }
+
+  function acceptItem(item) {
+    const s = state.search;
+    if (!s) return true;
+    if (s.theme && !matchesTheme(item, s.theme)) return false;
+    if (s.textFilter && !normalize(item.title + " " + (item.description || "")).includes(s.textFilter)) return false;
+    return true;
+  }
+
+  function appendItems(items) {
+    const seen = Object.create(null);
+    state.items.forEach((it) => { seen[it.id] = true; });
+    let added = 0;
+    items.forEach((it) => {
+      if (!it || !it.id || seen[it.id]) return;
+      seen[it.id] = true;
+      applyArea(it);
+      state.items.push(it);
+      added += 1;
+    });
+    return added;
+  }
+
+  function noteSourcePage(name, res) {
+    const src = state.search.sources[name];
+    src.fetched += res.items.length;
+    if (res.total != null) src.total = res.total;
+    if (name === "dataportal") src.offset += res.items.length || 20;
+    else src.page += 1;
+    if (res.done || !res.items.length) src.done = true;
+    if (src.total != null && src.fetched >= src.total) src.done = true;
+    if (src.done && src.total == null) src.total = src.fetched;
+  }
+
+  function pageNote(name, res, added) {
+    const src = state.search.sources[name];
+    const totalTxt = src.total != null ? src.total : (res.total != null ? res.total : (src.done ? src.fetched : res.items.length + "+"));
+    if (state.search.theme) {
+      const matched = res.items.filter(acceptItem).length;
+      return name + ": " + matched + " efter temafilter (av " + res.items.length + ", källan angav " + totalTxt + ")";
+    }
+    return name + ": " + added + " visade (källan angav " + totalTxt + ")";
+  }
+
+  async function fetchNextPages(names, gen) {
+    const notes = [];
+    for (let i = 0; i < names.length; i += 1) {
+      const name = names[i];
+      const src = state.search && state.search.sources[name];
+      if (!src || src.done) continue;
+      try {
+        const res = await fetchSource(name, state.search.query, src);
+        if (gen !== state.searchGen || !state.search || !state.search.sources[name]) return notes;
+        const added = appendItems(res.items.filter(acceptItem));
+        noteSourcePage(name, res);
+        if (added === 0 && !state.search.theme && !state.search.textFilter && res.items.length) src.done = true;
+        notes.push(pageNote(name, res, added));
+      } catch (err) {
+        if (gen !== state.searchGen) return notes;
+        notes.push(name + ": fel (" + (err && err.message ? err.message : err) + ")");
+        console.error(err);
+        if (state.errors.indexOf(name) === -1) state.errors.push(name);
+      }
+    }
+    return notes;
+  }
+
   async function runSearch(evt) {
     if (evt) evt.preventDefault();
     const q = buildQuery();
@@ -973,57 +1109,42 @@
     $("forfina").hidden = true;
     state.items = [];
     state.errors = [];
+    state.loadingMore = false;
+    state.searchGen = (state.searchGen || 0) + 1;
+    const gen = state.searchGen;
     state.selectedArea = parseAreaInput($("omrade").value);
+    const names = includedSources();
+    state.search = { query: q.apiQuery, theme: q.theme, textFilter: null, sources: blankCursors(names) };
 
-    const jobs = [];
-    if (sourceEnabled("scb")) jobs.push(["scb", searchScb(q.apiQuery)]);
-    if (sourceEnabled("kolada")) jobs.push(["kolada", searchKolada(q.apiQuery)]);
-    if (sourceEnabled("dataportal")) jobs.push(["dataportal", searchDataportal(q.apiQuery)]);
+    let notes = await fetchNextPages(names, gen);
+    if (gen !== state.searchGen) return;
 
-    const gathered = [];
-    const notes = [];
-    for (const [name, promise] of jobs) {
-      try {
-        const res = await promise;
-        let items = res.items;
-        if (q.theme) {
-          const before = items.length;
-          items = items.filter((it) => matchesTheme(it, q.theme));
-          notes.push(name + ": " + items.length + " efter temafilter (av " + before + ", källan angav " + res.total + ")");
-        } else {
-          notes.push(name + ": " + items.length + " visade (källan angav " + res.total + ")");
-        }
-        gathered.push.apply(gathered, items);
-      } catch (err) {
-        state.errors.push(name);
-        notes.push(name + ": fel (" + (err && err.message ? err.message : err) + ")");
-        console.error(err);
-      }
-    }
-
-    // Om fritext+tema gav noll i en källa, prova temat som sökfråga och filtrera på texten.
-    if (q.mode === "text+tema" && !gathered.length) {
+    // Om fritext+tema gav noll träffar, prova temat som sökfråga och filtrera på texten.
+    if (q.mode === "text+tema" && !state.items.length) {
       $("status").textContent = "Inga träffar på fritext och tema tillsammans. Provar temat som sökfråga och filtrerar på din text…";
-      const retry = [];
-      if (sourceEnabled("scb")) retry.push(searchScb(q.theme.query));
-      if (sourceEnabled("kolada")) retry.push(searchKolada(q.theme.query));
-      if (sourceEnabled("dataportal")) retry.push(searchDataportal(q.theme.query));
-      const textLow = normalize(q.text);
-      for (const promise of retry) {
-        try {
-          const res = await promise;
-          const items = res.items.filter((it) => matchesTheme(it, q.theme) && normalize(it.title + " " + (it.description || "")).includes(textLow));
-          gathered.push.apply(gathered, items);
-        } catch (err) {
-          console.error(err);
-        }
-      }
+      state.search.query = q.theme.query;
+      state.search.textFilter = normalize(q.text);
+      state.search.sources = blankCursors(names);
+      notes = await fetchNextPages(names, gen);
+      if (gen !== state.searchGen) return;
     }
 
-    gathered.forEach(applyArea);
-    state.items = gathered;
     const errText = state.errors.length ? " Fel mot: " + state.errors.join(", ") + "." : "";
     $("status").textContent = "Sökning: " + notes.join(". ") + "." + errText;
+    render();
+  }
+
+  async function loadMore() {
+    if (!state.search || state.loadingMore) return;
+    const names = Object.keys(state.search.sources).filter((id) => !state.search.sources[id].done);
+    if (!names.length) return;
+    const gen = state.searchGen;
+    state.loadingMore = true;
+    render();
+    const notes = await fetchNextPages(names, gen);
+    if (gen !== state.searchGen) return;
+    state.loadingMore = false;
+    if (notes.length) $("status").textContent = "Fler träffar: " + notes.join(". ") + ".";
     render();
   }
 
@@ -1144,6 +1265,10 @@
     });
 
     document.addEventListener("click", (ev) => {
+      if (ev.target.closest("#visaFler")) {
+        loadMore();
+        return;
+      }
       const choose = ev.target.closest("[data-valj-mapp]");
       if (choose && !choose.disabled) {
         addItemToFolder(choose.getAttribute("data-valj-mapp"), state.pendingItem);
