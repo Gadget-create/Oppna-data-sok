@@ -117,12 +117,14 @@
     }
     .kort h3 { margin: .15rem 0 .35rem; font-size: 1.05rem; }
     .meta-rad { color: var(--muted); font-size: .9rem; margin-bottom: .4rem; }
-    dl { margin: 0; display: grid; grid-template-columns: 11rem 1fr; gap: .2rem .8rem; }
-    @media (max-width: 600px) { dl { grid-template-columns: 1fr; } }
+    dl { margin: 0; display: grid; grid-template-columns: minmax(0, 11rem) minmax(0, 1fr); gap: .2rem .8rem; }
+    @media (max-width: 600px) { dl { grid-template-columns: minmax(0, 1fr); } }
+    .kort { overflow-wrap: anywhere; }
     dt { color: var(--muted); font-weight: 600; font-size: .88rem; }
     dd { margin: 0; }
     .lankar { margin: .7rem 0 0; display: flex; flex-wrap: wrap; gap: .5rem .9rem; }
     .lankar a { color: var(--accent); }
+    .lankar button { white-space: normal; max-width: 100%; text-align: left; }
     .badge {
       display: inline-block;
       border-radius: 999px;
@@ -136,16 +138,94 @@
     .badge.warn { background: var(--warn-bg); color: var(--warn); }
     .badge.miss { background: var(--miss-bg); color: var(--miss); }
     .fel { color: var(--miss); }
+    .flikar { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0 .2rem; }
+    .flik {
+      background: #fff;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: .35rem .8rem;
+    }
+    .flik[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .kort-topp { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .4rem .6rem; align-items: flex-start; }
+    .kort-topp .meta-rad { flex: 1; min-width: 0; margin-bottom: 0; }
+    button.spara {
+      display: inline-flex;
+      align-items: center;
+      gap: .3rem;
+      background: #fff;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: .35rem .65rem;
+      white-space: nowrap;
+    }
+    button.spara[aria-pressed="true"] { background: var(--accent); color: #fff; }
+    .ikon { display: block; flex: none; }
+    .verktyg, .mapp-rad { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+    .verktyg { margin-bottom: .8rem; }
+    .mapp {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: .7rem .9rem;
+      margin-bottom: .6rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+      align-items: center;
+      justify-content: space-between;
+    }
+    button.mapp-oppna {
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      padding: .15rem 0;
+      flex: 1;
+      min-width: 10rem;
+    }
+    .mapp-namn { font-weight: 700; }
+    .antal { color: var(--muted); font-weight: 400; }
+    .mapp-rubrik { font-size: 1.2rem; margin: .2rem 0 .5rem; }
+    .notis { display: block; margin-top: .75rem; color: var(--muted); font-size: .9rem; }
+    .notis input, .dialog input[type="text"] {
+      display: block;
+      width: 100%;
+      margin-top: .25rem;
+      padding: .5rem .65rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+    .dialog {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem;
+      width: calc(100vw - 1.6rem);
+      max-width: 28rem;
+      background: var(--card);
+      color: var(--ink);
+    }
+    .dialog::backdrop { background: rgba(28, 36, 41, .4); }
+    .dialog h2 { font-size: 1.15rem; margin: 0 0 .35rem; }
+    .spar-lista { display: flex; flex-direction: column; gap: .4rem; margin: .7rem 0; }
+    .spar-lista button { width: 100%; text-align: left; }
     footer { max-width: 980px; margin: 1.5rem auto 2.5rem; padding: 0 1.1rem; color: var(--muted); font-size: .9rem; }
   </style>
 </head>
 <body>
   <header>
     <h1>Sök öppna samhällsbyggnadsdata</h1>
+    <nav class="flikar" aria-label="Vy">
+      <button type="button" class="flik" id="tabSok" aria-pressed="true">Sök</button>
+      <button type="button" class="flik" id="tabSparade" aria-pressed="false">Sparade<span id="sparAntal"></span></button>
+    </nav>
     <p class="lead">En enkel prototyp för att se vilken öppen data som finns inom ett tema, på vilken geografisk nivå, och vad datat avser. Sidan hämtar bara metadata, inte själva statistikvärdena.</p>
     <p class="note">Sök på fritext och välj gärna ett tema. Båda används tillsammans. Filtrera på geografisk nivå, och välj ett område (till exempel Gävle kommun) för att se om datat finns där.</p>
   </header>
   <main>
+    <div id="sokvy">
     <form class="sok" id="sokform">
       <input type="search" id="q" name="q" placeholder="Sök på fritext, till exempel bostäder, befolkning eller gymnasieskola" autocomplete="off">
       <button type="submit">Sök</button>
@@ -174,7 +254,45 @@
     <div class="sammanfattning" id="sammanfattning" hidden></div>
     <p><button type="button" class="secondary" id="forfina" hidden>Förfina geografiska nivåer för SCB-träffarna</button></p>
     <div id="traffar"></div>
+    </div>
+    <section id="sparvy" hidden>
+      <div class="verktyg">
+        <button type="button" class="secondary" id="nyMapp">Ny mapp</button>
+        <button type="button" class="secondary" id="exportera">Exportera</button>
+        <button type="button" class="secondary" id="importeraKnapp">Importera</button>
+        <input id="importera" type="file" accept="application/json,.json" hidden>
+      </div>
+      <p id="sparStatus" class="lead"></p>
+      <div id="sparInnehall"></div>
+    </section>
   </main>
+  <dialog id="sparvaljare" class="dialog">
+    <form id="sparForm">
+      <h2>Spara i mapp</h2>
+      <p id="sparTitel" class="lead"></p>
+      <div id="sparMappar" class="spar-lista"></div>
+      <p id="sparFel" class="fel"></p>
+      <label class="notis">Ny mapp
+        <input id="sparNy" type="text" maxlength="80" placeholder="Namn på mappen" autocomplete="off">
+      </label>
+      <div class="mapp-rad" style="margin-top:.8rem">
+        <button type="submit">Skapa och spara</button>
+        <button type="button" class="secondary" id="sparAvbryt">Avbryt</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="namndialog" class="dialog">
+    <form id="namnForm">
+      <h2 id="namnRubrik">Ny mapp</h2>
+      <label class="notis">Namn
+        <input id="namnInput" type="text" maxlength="80" required placeholder="Namn på mappen" autocomplete="off">
+      </label>
+      <div class="mapp-rad" style="margin-top:.8rem">
+        <button type="submit">Spara</button>
+        <button type="button" class="secondary" id="namnAvbryt">Avbryt</button>
+      </div>
+    </form>
+  </dialog>
   <footer>
     Källor: SCB Statistikdatabasen (API v2), Kolada (API v3) och Sveriges dataportal. Prototyp för brainstorming, inte en komplett katalog.
   </footer>

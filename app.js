@@ -81,12 +81,26 @@
     UPDATE_CONT: "Kontinuerligt uppdaterad"
   };
 
+  const SAVED_KEY = "oppnaData.saved.v1";
+  const SNAP_KEYS = [
+    "id", "source", "tableId", "title", "description", "subjectCode", "subject",
+    "pathLabels", "operatingArea", "perspective", "publisher", "keywords",
+    "variables", "firstPeriod", "lastPeriod", "timeUnit", "frequency", "updated",
+    "prelDate", "levels", "hasRegionVar", "levelSource", "measures", "notes",
+    "sourceName", "webUrl", "metaUrl", "dataUrl", "apiUrl", "catalogUrl"
+  ];
+
   const state = {
     theme: null,
     items: [],
     areas: [],
     selectedArea: null,
-    errors: []
+    errors: [],
+    view: "sok",
+    openFolder: null,
+    saved: { version: 1, folders: [] },
+    pendingItem: null,
+    nameAction: null
   };
 
   const $ = (id) => document.getElementById(id);
@@ -582,7 +596,7 @@
     return '<span class="badge ' + cls + '">' + escapeHtml(st.detail) + "</span>";
   }
 
-  function renderCard(item) {
+  function renderCard(item, opts) {
     const levels = displayLevels(item);
     const levelText = levels.length ? levelLabels(levels) : (item.hasRegionVar ? "okänd" : "Ingen regional indelning i metadata");
     const period = [item.firstPeriod, item.lastPeriod].filter(Boolean).join("–") || (item.lastPeriod || "okänd");
@@ -598,11 +612,12 @@
       ? escapeHtml(item.description)
       : "Ingen beskrivning i källan.";
     const subject = item.subject || item.operatingArea || "okänd";
-    const enrich = item.source === "scb" && !item.regionCodes
+    const enrich = !(opts && opts.saved) && item.source === "scb" && !item.regionCodes
       ? '<button type="button" class="secondary" data-enrich="' + escapeHtml(item.id) + '">Hämta fullständig tabellmetadata</button>'
       : "";
     const area = badgeForArea(item.areaStatus);
     const sourceBadge = '<span class="badge">' + escapeHtml(item.sourceName) + "</span>";
+    const saveBtn = saveButtonHtml(item, opts && opts.folderId);
     const levelNote = item.levelSource === "titel"
       ? " (utläst ur titeln, inte ur regionkoderna)"
       : (item.levelSource === "okand" ? " (regionvariabel finns, men nivån gick inte att utläsa utan tabellmetadata)" : "");
@@ -618,7 +633,10 @@
     if (item.dataUrl) links.push('<a href="' + escapeHtml(item.dataUrl) + '" target="_blank" rel="noopener">Data för export (API, hämtas inte här)</a>');
     return (
       '<article class="kort">' +
-        '<div class="meta-rad">' + sourceBadge + area + "</div>" +
+        '<div class="kort-topp">' +
+          '<div class="meta-rad">' + sourceBadge + area + "</div>" +
+          saveBtn +
+        "</div>" +
         "<h3>" + escapeHtml(item.title) + "</h3>" +
         "<dl>" +
           "<div><dt>Vad datat avser</dt><dd>" + desc + "</dd></div>" +
@@ -632,8 +650,314 @@
           "<div><dt>Källa</dt><dd>" + escapeHtml(item.sourceName) + (item.tableId ? " (" + escapeHtml(item.tableId) + ")" : "") + "</dd></div>" +
         "</dl>" +
         '<div class="lankar">' + links.join(" ") + " " + enrich + "</div>" +
+        (opts && opts.extra ? opts.extra : "") +
       "</article>"
     );
+  }
+
+  /* Sparade mappar. Metadata sparas som en ögonblicksbild plus källa och id. */
+  const ICON_SAVE = '<svg class="ikon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" d="M6 3.5h12a1 1 0 0 1 1 1V21l-7-3.5L5 21V4.5a1 1 0 0 1 1-1z"/></svg>';
+  const ICON_SAVED = '<svg class="ikon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6 2h12a1 1 0 0 1 1 1v19l-7-3.5L5 22V3a1 1 0 0 1 1-1z"/></svg>';
+
+  function loadStore() {
+    try {
+      const raw = localStorage.getItem(SAVED_KEY);
+      if (!raw) return { version: 1, folders: [] };
+      const data = JSON.parse(raw);
+      if (!data || Number(data.version) !== 1 || !Array.isArray(data.folders)) return { version: 1, folders: [] };
+      data.folders = data.folders.filter((f) => f && typeof f.name === "string" && Array.isArray(f.items));
+      data.folders.forEach((f) => {
+        f.items = f.items.filter((it) => it && it.id && it.snapshot);
+      });
+      return data;
+    } catch (err) {
+      return { version: 1, folders: [] };
+    }
+  }
+
+  function persistStore() {
+    try {
+      localStorage.setItem(SAVED_KEY, JSON.stringify(state.saved));
+      return true;
+    } catch (err) {
+      const el = $("sparStatus");
+      if (el) el.textContent = "Kunde inte spara i den här webbläsaren.";
+      return false;
+    }
+  }
+
+  function newId(prefix) {
+    return prefix + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+  }
+
+  function asArray(value) {
+    if (Array.isArray(value)) return value;
+    if (value == null || value === "") return [];
+    return [String(value)];
+  }
+
+  function snapshotItem(item) {
+    const arrays = { pathLabels: 1, keywords: 1, variables: 1, levels: 1, measures: 1, notes: 1 };
+    const snap = {};
+    SNAP_KEYS.forEach((key) => {
+      if (item[key] == null || item[key] === "") return;
+      snap[key] = arrays[key] ? asArray(item[key]) : item[key];
+    });
+    return JSON.parse(JSON.stringify(snap));
+  }
+
+  function foldersContaining(id) {
+    return state.saved.folders.filter((f) => f.items.some((it) => it.id === id));
+  }
+
+  function svCount(n, one, many) {
+    return n + " " + (n === 1 ? one : many);
+  }
+
+  function saveButtonHtml(item, folderId) {
+    if (!item || !item.id) return "";
+    const n = foldersContaining(item.id).length;
+    const label = n ? "Sparad" : "Spara";
+    const title = n
+      ? "Sparad i " + svCount(n, "mapp", "mappar") + ". Välj fler mappar om du vill."
+      : "Spara i en mapp";
+    const from = folderId ? ' data-from-folder="' + escapeHtml(folderId) + '"' : "";
+    return '<button type="button" class="spara" data-save="' + escapeHtml(item.id) + '"' + from +
+      ' aria-pressed="' + (n ? "true" : "false") + '" title="' + escapeHtml(title) + '">' +
+      (n ? ICON_SAVED : ICON_SAVE) + " " + label + "</button>";
+  }
+
+  function showDialog(dlg) {
+    try {
+      if (typeof dlg.showModal === "function" && !dlg.open) {
+        dlg.showModal();
+        return;
+      }
+    } catch (err) { /* utan user gesture, eller äldre webbläsare */ }
+    dlg.setAttribute("open", "");
+  }
+
+  function closeDialog(dlg) {
+    if (typeof dlg.close === "function" && dlg.open) dlg.close();
+    else dlg.removeAttribute("open");
+  }
+
+  function createFolder(name) {
+    const trimmed = String(name || "").trim().slice(0, 80);
+    if (!trimmed) return null;
+    const folder = { id: newId("mapp"), name: trimmed, items: [] };
+    state.saved.folders.push(folder);
+    return persistStore() ? folder : null;
+  }
+
+  function renameFolder(id, name) {
+    const folder = state.saved.folders.find((f) => f.id === id);
+    const trimmed = String(name || "").trim().slice(0, 80);
+    if (!folder || !trimmed) return false;
+    folder.name = trimmed;
+    return persistStore();
+  }
+
+  function deleteFolder(id) {
+    const before = state.saved.folders.length;
+    state.saved.folders = state.saved.folders.filter((f) => f.id !== id);
+    if (state.saved.folders.length === before) return false;
+    if (state.openFolder === id) state.openFolder = null;
+    return persistStore();
+  }
+
+  function addItemToFolder(folderId, item) {
+    const folder = state.saved.folders.find((f) => f.id === folderId);
+    if (!folder || !item || !item.id) return false;
+    if (folder.items.some((it) => it.id === item.id)) return false;
+    folder.items.push({
+      id: item.id,
+      source: item.source || "",
+      savedAt: new Date().toISOString(),
+      note: "",
+      snapshot: snapshotItem(item)
+    });
+    return persistStore();
+  }
+
+  function removeItem(folderId, itemId) {
+    const folder = state.saved.folders.find((f) => f.id === folderId);
+    if (!folder) return;
+    folder.items = folder.items.filter((it) => it.id !== itemId);
+    persistStore();
+  }
+
+  function setNote(folderId, itemId, note) {
+    const folder = state.saved.folders.find((f) => f.id === folderId);
+    const entry = folder && folder.items.find((it) => it.id === itemId);
+    if (!entry) return;
+    entry.note = String(note || "").slice(0, 280);
+    persistStore();
+  }
+
+  function itemForSaveButton(btn) {
+    const id = btn.getAttribute("data-save");
+    const fromFolder = btn.getAttribute("data-from-folder");
+    if (fromFolder) {
+      const folder = state.saved.folders.find((f) => f.id === fromFolder);
+      const entry = folder && folder.items.find((it) => it.id === id);
+      if (entry && entry.snapshot) return entry.snapshot;
+    }
+    return state.items.find((it) => it.id === id) || null;
+  }
+
+  function openPicker(item) {
+    state.pendingItem = snapshotItem(item);
+    $("sparTitel").textContent = item.title || "Utan titel";
+    $("sparFel").textContent = "";
+    $("sparNy").value = "";
+    $("sparMappar").innerHTML = state.saved.folders.length
+      ? state.saved.folders.map((f) => {
+          const has = f.items.some((it) => it.id === item.id);
+          return '<button type="button" class="secondary" data-valj-mapp="' + escapeHtml(f.id) + '"' +
+            (has ? " disabled" : "") + ">" + escapeHtml(f.name) + (has ? " · redan sparad" : "") + "</button>";
+        }).join("")
+      : '<p class="lead" style="margin:0">Ingen mapp ännu. Skapa en nedan.</p>';
+    showDialog($("sparvaljare"));
+    if (!state.saved.folders.length) $("sparNy").focus();
+  }
+
+  function openNameDialog(action) {
+    state.nameAction = action;
+    $("namnRubrik").textContent = action.type === "rename" ? "Byt namn" : "Ny mapp";
+    $("namnInput").value = action.name || "";
+    showDialog($("namndialog"));
+    $("namnInput").focus();
+    $("namnInput").select();
+  }
+
+  function updateSavedCount() {
+    const n = state.saved.folders.reduce((sum, f) => sum + f.items.length, 0);
+    $("sparAntal").textContent = n ? " (" + n + ")" : "";
+  }
+
+  function refreshViews() {
+    updateSavedCount();
+    if (state.view === "sparade") renderSaved();
+    else if (state.items.length) render();
+  }
+
+  function showView(name) {
+    state.view = name === "sparade" ? "sparade" : "sok";
+    const sok = state.view === "sok";
+    $("sokvy").hidden = !sok;
+    $("sparvy").hidden = sok;
+    $("tabSok").setAttribute("aria-pressed", sok ? "true" : "false");
+    $("tabSparade").setAttribute("aria-pressed", sok ? "false" : "true");
+    if (!sok) renderSaved();
+    else if (state.items.length) render();
+    updateSavedCount();
+  }
+
+  function savedExtra(entry, folderId) {
+    return '<label class="notis">Anteckning' +
+      '<input type="text" maxlength="280" data-note-folder="' + escapeHtml(folderId) + '" data-note-item="' + escapeHtml(entry.id) +
+      '" value="' + escapeHtml(entry.note || "") + '" placeholder="Valfri kort anteckning"></label>' +
+      '<div class="lankar"><button type="button" class="secondary" data-remove-folder="' + escapeHtml(folderId) +
+      '" data-remove-item="' + escapeHtml(entry.id) + '">Ta bort från mappen</button></div>';
+  }
+
+  function renderSaved() {
+    const root = $("sparInnehall");
+    const folder = state.openFolder && state.saved.folders.find((f) => f.id === state.openFolder);
+    if (state.openFolder && !folder) state.openFolder = null;
+    if (!folder) {
+      if (!state.saved.folders.length) {
+        root.innerHTML = "<p>Inga mappar ännu. Spara en träff med knappen Spara, eller skapa en mapp här.</p>";
+        return;
+      }
+      root.innerHTML = state.saved.folders.map((f) =>
+        '<article class="mapp">' +
+          '<button type="button" class="mapp-oppna" data-open-folder="' + escapeHtml(f.id) + '">' +
+            '<span class="mapp-namn">' + escapeHtml(f.name) + "</span> " +
+            '<span class="antal">' + svCount(f.items.length, "sparad", "sparade") + "</span>" +
+          "</button>" +
+          '<div class="mapp-rad">' +
+            '<button type="button" class="secondary" data-rename-folder="' + escapeHtml(f.id) + '">Byt namn</button>' +
+            '<button type="button" class="secondary" data-delete-folder="' + escapeHtml(f.id) + '">Ta bort</button>' +
+          "</div>" +
+        "</article>"
+      ).join("");
+      return;
+    }
+    const cards = folder.items.map((entry) => {
+      const snap = entry.snapshot || {};
+      if (!snap.id) snap.id = entry.id;
+      if (!snap.source) snap.source = entry.source;
+      return renderCard(snap, { saved: true, folderId: folder.id, extra: savedExtra(entry, folder.id) });
+    }).join("");
+    root.innerHTML =
+      '<p><button type="button" class="secondary" data-back>Alla mappar</button></p>' +
+      '<h2 class="mapp-rubrik">' + escapeHtml(folder.name) + "</h2>" +
+      '<div class="mapp-rad" style="margin-bottom:.8rem">' +
+        '<button type="button" class="secondary" data-rename-folder="' + escapeHtml(folder.id) + '">Byt namn</button>' +
+        '<button type="button" class="secondary" data-delete-folder="' + escapeHtml(folder.id) + '">Ta bort mapp</button>' +
+      "</div>" +
+      (cards || "<p>Mappen är tom.</p>");
+  }
+
+  function mergeStore(incoming) {
+    if (!incoming || Number(incoming.version) !== 1 || !Array.isArray(incoming.folders)) {
+      throw new Error("ogiltig");
+    }
+    let addedFolders = 0;
+    let addedItems = 0;
+    incoming.folders.forEach((folder) => {
+      if (!folder || typeof folder.name !== "string" || !folder.name.trim() || !Array.isArray(folder.items)) return;
+      const name = folder.name.trim().slice(0, 80);
+      let dest = folder.id ? state.saved.folders.find((f) => f.id === folder.id) : null;
+      if (!dest) dest = state.saved.folders.find((f) => f.name.trim().toLowerCase() === name.toLowerCase());
+      if (!dest) {
+        const id = folder.id && !state.saved.folders.some((f) => f.id === folder.id) ? String(folder.id) : newId("mapp");
+        dest = { id: id, name: name, items: [] };
+        state.saved.folders.push(dest);
+        addedFolders += 1;
+      }
+      folder.items.forEach((it) => {
+        if (!it || !it.id || !it.snapshot || typeof it.snapshot !== "object") return;
+        const existing = dest.items.find((x) => x.id === it.id);
+        if (!existing) {
+          dest.items.push({
+            id: String(it.id),
+            source: String(it.source || it.snapshot.source || ""),
+            savedAt: typeof it.savedAt === "string" ? it.savedAt : new Date().toISOString(),
+            note: typeof it.note === "string" ? it.note.slice(0, 280) : "",
+            snapshot: snapshotItem(Object.assign({ id: it.id, source: it.source }, it.snapshot))
+          });
+          addedItems += 1;
+        } else if (!existing.note && typeof it.note === "string" && it.note.trim()) {
+          existing.note = it.note.slice(0, 280);
+        }
+      });
+    });
+    persistStore();
+    return { addedFolders: addedFolders, addedItems: addedItems };
+  }
+
+  function mergeMessage(res) {
+    if (!res.addedFolders && !res.addedItems) return "Inget nytt att lägga till. Det som redan fanns behölls.";
+    const parts = [];
+    if (res.addedFolders) parts.push(svCount(res.addedFolders, "mapp", "mappar"));
+    if (res.addedItems) parts.push(svCount(res.addedItems, "post", "poster"));
+    return "Lade till " + parts.join(" och ") + ".";
+  }
+
+  function exportSaved() {
+    const blob = new Blob([JSON.stringify(state.saved, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = "oppna-data-sparade.json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    $("sparStatus").textContent = "Exporten laddas ner som oppna-data-sparade.json.";
   }
 
   async function runSearch(evt) {
@@ -763,6 +1087,118 @@
     });
     $("omrade").addEventListener("focus", () => { loadAreas().catch((err) => console.error(err)); });
     $("forfina").addEventListener("click", refineAll);
+
+    state.saved = loadStore();
+    updateSavedCount();
+
+    $("tabSok").addEventListener("click", () => showView("sok"));
+    $("tabSparade").addEventListener("click", () => showView("sparade"));
+    $("nyMapp").addEventListener("click", () => openNameDialog({ type: "create" }));
+    $("exportera").addEventListener("click", exportSaved);
+    $("importeraKnapp").addEventListener("click", () => {
+      $("importera").value = "";
+      $("importera").click();
+    });
+    $("importera").addEventListener("change", () => {
+      const file = $("importera").files && $("importera").files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(String(reader.result || ""));
+          const res = mergeStore(data);
+          $("sparStatus").textContent = mergeMessage(res);
+          refreshViews();
+        } catch (err) {
+          $("sparStatus").textContent = "Kunde inte läsa filen. Välj en JSON-export från den här sidan.";
+        }
+      };
+      reader.readAsText(file);
+    });
+    $("sparAvbryt").addEventListener("click", () => closeDialog($("sparvaljare")));
+    $("namnAvbryt").addEventListener("click", () => closeDialog($("namndialog")));
+    $("sparForm").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const name = $("sparNy").value.trim();
+      if (!name) {
+        $("sparFel").textContent = "Skriv ett namn på den nya mappen, eller välj en mapp ovan.";
+        return;
+      }
+      const folder = createFolder(name);
+      if (folder && state.pendingItem) addItemToFolder(folder.id, state.pendingItem);
+      closeDialog($("sparvaljare"));
+      refreshViews();
+    });
+    $("namnForm").addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const name = $("namnInput").value.trim();
+      if (!name || !state.nameAction) return;
+      const action = state.nameAction;
+      closeDialog($("namndialog"));
+      if (action.type === "rename") renameFolder(action.id, name);
+      else {
+        const folder = createFolder(name);
+        if (folder) state.openFolder = folder.id;
+      }
+      refreshViews();
+    });
+
+    document.addEventListener("click", (ev) => {
+      const choose = ev.target.closest("[data-valj-mapp]");
+      if (choose && !choose.disabled) {
+        addItemToFolder(choose.getAttribute("data-valj-mapp"), state.pendingItem);
+        closeDialog($("sparvaljare"));
+        refreshViews();
+        return;
+      }
+      const saveBtn = ev.target.closest("[data-save]");
+      if (saveBtn) {
+        const item = itemForSaveButton(saveBtn);
+        if (item) openPicker(item);
+        return;
+      }
+      const openBtn = ev.target.closest("[data-open-folder]");
+      if (openBtn) {
+        state.openFolder = openBtn.getAttribute("data-open-folder");
+        $("sparStatus").textContent = "";
+        renderSaved();
+        return;
+      }
+      if (ev.target.closest("[data-back]")) {
+        state.openFolder = null;
+        renderSaved();
+        return;
+      }
+      const renameBtn = ev.target.closest("[data-rename-folder]");
+      if (renameBtn) {
+        const id = renameBtn.getAttribute("data-rename-folder");
+        const folder = state.saved.folders.find((f) => f.id === id);
+        if (folder) openNameDialog({ type: "rename", id: id, name: folder.name });
+        return;
+      }
+      const deleteBtn = ev.target.closest("[data-delete-folder]");
+      if (deleteBtn) {
+        const id = deleteBtn.getAttribute("data-delete-folder");
+        const folder = state.saved.folders.find((f) => f.id === id);
+        if (!folder) return;
+        if (!window.confirm("Ta bort mappen \u201d" + folder.name + "\u201d och allt som är sparat i den?")) return;
+        deleteFolder(id);
+        $("sparStatus").textContent = "Mappen är borttagen.";
+        refreshViews();
+        return;
+      }
+      const removeBtn = ev.target.closest("[data-remove-item]");
+      if (removeBtn) {
+        removeItem(removeBtn.getAttribute("data-remove-folder"), removeBtn.getAttribute("data-remove-item"));
+        refreshViews();
+      }
+    });
+    document.addEventListener("change", (ev) => {
+      const note = ev.target.closest("[data-note-item]");
+      if (!note) return;
+      setNote(note.getAttribute("data-note-folder"), note.getAttribute("data-note-item"), note.value);
+    });
+
     loadAreas().catch(() => {});
   }
 
